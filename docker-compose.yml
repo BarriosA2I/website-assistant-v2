@@ -1,0 +1,81 @@
+# docker-compose.yml
+# ============================================================================
+# BARRIOS A2I WEBSITE ASSISTANT v2.0 — DOCKER COMPOSE
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # BACKEND — FastAPI + LangGraph
+  # ==========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: wa2-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=development
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TRINITY_API_URL=${TRINITY_API_URL:-http://trinity:8001}
+      - TRINITY_API_KEY=${TRINITY_API_KEY:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - wa2-network
+
+  # ==========================================================================
+  # FRONTEND — Next.js
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: wa2-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=/api/chat
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - wa2-network
+
+  # ==========================================================================
+  # REDIS — Session Storage & Caching
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: wa2-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - wa2-network
+
+networks:
+  wa2-network:
+    driver: bridge
+
+volumes:
+  redis-data:
