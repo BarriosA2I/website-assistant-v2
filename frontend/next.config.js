@@ -7,16 +7,21 @@ const nextConfig = {
   
   // Image optimization
   images: {
-    domains: ['barriosa2i.com', 'cdn.barriosa2i.com'],
+    domains: ['barriosa2i.com', 'cdn.barriosa2i.com', 'storage.googleapis.com', 's3.amazonaws.com'],
     formats: ['image/avif', 'image/webp'],
   },
-  
+
   // Rewrites for API proxy
   async rewrites() {
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL || 'http://localhost:8000';
     return [
       {
         source: '/api/v2/:path*',
-        destination: `${process.env.BACKEND_URL || 'http://localhost:8000'}/api/v2/:path*`,
+        destination: `${backendUrl}/api/v2/:path*`,
+      },
+      {
+        source: '/api/v3/:path*',
+        destination: `${backendUrl}/api/v3/:path*`,
       },
     ];
   },
