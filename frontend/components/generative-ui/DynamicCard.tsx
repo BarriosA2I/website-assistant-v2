@@ -19,11 +19,15 @@ import {
   isROICard,
   isPricingCard,
   isTrendCard,
+  isBriefReviewCard,
+  isOrderTrackingCard,
 } from "@/lib/types/generative-ui";
 import { CompetitorCard } from "./CompetitorCard";
 import { PersonaCard } from "./PersonaCard";
 import { ScriptEditor } from "./ScriptEditor";
 import { ROICalculator } from "./ROICalculator";
+import { BriefReviewCard } from "./BriefReviewCard";
+import { OrderTrackingCard } from "./OrderTrackingCard";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +46,10 @@ interface DynamicCardProps {
   onScriptReject?: () => void;
   onScriptEdit?: (content: string) => void;
   onROICTA?: () => void;
+  // v3.0 handlers
+  onBriefApprove?: (updates: Record<string, string>) => void;
+  onBriefRequestChanges?: (feedback: string) => void;
+  onOrderDownload?: () => void;
 }
 
 // ============================================================================
@@ -182,6 +190,9 @@ export const DynamicCard: React.FC<DynamicCardProps> = ({
   onScriptReject,
   onScriptEdit,
   onROICTA,
+  onBriefApprove,
+  onBriefRequestChanges,
+  onOrderDownload,
 }) => {
   return (
     <AnimatePresence mode="wait">
@@ -232,13 +243,30 @@ export const DynamicCard: React.FC<DynamicCardProps> = ({
           <MarketTrendCard data={card} />
         )}
 
+        {isBriefReviewCard(card) && (
+          <BriefReviewCard
+            card={card as any}
+            onApprove={onBriefApprove}
+            onRequestChanges={onBriefRequestChanges}
+          />
+        )}
+
+        {isOrderTrackingCard(card) && (
+          <OrderTrackingCard
+            card={card as any}
+            onDownload={onOrderDownload}
+          />
+        )}
+
         {/* Fallback for unknown types */}
         {!isCompetitorCard(card) &&
           !isPersonaCard(card) &&
           !isScriptCard(card) &&
           !isROICard(card) &&
           !isPricingCard(card) &&
-          !isTrendCard(card) && <UnknownCard type={(card as any).type} />}
+          !isTrendCard(card) &&
+          !isBriefReviewCard(card) &&
+          !isOrderTrackingCard(card) && <UnknownCard type={(card as any).type} />}
       </motion.div>
     </AnimatePresence>
   );

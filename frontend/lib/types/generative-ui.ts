@@ -17,6 +17,11 @@ export enum CardType {
   ROI_CALCULATOR = "roi_calculator",
   PRICING_COMPARISON = "pricing_comparison",
   MARKET_TREND = "market_trend",
+  // v3.0 additions
+  CHECKOUT = "checkout",
+  PRODUCTION_TRACKER = "production_tracker",
+  BRIEF_REVIEW = "brief_review",
+  ORDER_TRACKING = "order_tracking",
 }
 
 export type Advantage = "us" | "them" | "tie";
@@ -210,6 +215,82 @@ export interface MarketTrendCard {
 }
 
 // ============================================================================
+// BRIEF REVIEW CARD (v3.0)
+// ============================================================================
+
+export interface BriefItem {
+  label: string;
+  value: string;
+  editable: boolean;
+  warning?: string | null;
+}
+
+export interface BriefReviewCard {
+  type: CardType.BRIEF_REVIEW;
+  title: string;
+  subtitle: string;
+  business_info: BriefItem[];
+  creative_direction: BriefItem[];
+  technical_specs: BriefItem[];
+  validation_passed: boolean;
+  validation_warnings: string[];
+  can_proceed: boolean;
+  proceed_label: string;
+  edit_label: string;
+  session_id: string;
+  brief_version: number;
+  generated_at: string;
+}
+
+// ============================================================================
+// ORDER TRACKING CARD (v3.0)
+// ============================================================================
+
+export type OrderPhaseStatus = "pending" | "active" | "completed" | "failed";
+export type OrderStatus =
+  | "payment_pending"
+  | "payment_confirmed"
+  | "brief_review"
+  | "production_queued"
+  | "production_active"
+  | "production_complete"
+  | "delivery_processing"
+  | "delivered"
+  | "failed";
+
+export interface OrderPhase {
+  id: string;
+  name: string;
+  status: OrderPhaseStatus;
+  started_at?: string | null;
+  completed_at?: string | null;
+  details?: string | null;
+}
+
+export interface OrderTrackingCard {
+  type: CardType.ORDER_TRACKING;
+  order_id: string;
+  order_number: string;
+  status: OrderStatus;
+  status_label: string;
+  status_description: string;
+  progress_percent: number;
+  current_phase: string;
+  phases: OrderPhase[];
+  created_at: string;
+  estimated_completion?: string | null;
+  actual_completion?: string | null;
+  video_url?: string | null;
+  video_thumbnail?: string | null;
+  download_expires_at?: string | null;
+  can_cancel: boolean;
+  can_download: boolean;
+  support_url: string;
+  session_id: string;
+  last_updated: string;
+}
+
+// ============================================================================
 // RENDER CARD UNION TYPE
 // ============================================================================
 
@@ -219,7 +300,9 @@ export type RenderCard =
   | ScriptPreviewCard
   | ROICalculatorCard
   | PricingComparisonCard
-  | MarketTrendCard;
+  | MarketTrendCard
+  | BriefReviewCard
+  | OrderTrackingCard;
 
 // ============================================================================
 // ASSISTANT MESSAGE
@@ -264,4 +347,12 @@ export function isPricingCard(card: RenderCard): card is PricingComparisonCard {
 
 export function isTrendCard(card: RenderCard): card is MarketTrendCard {
   return card.type === CardType.MARKET_TREND;
+}
+
+export function isBriefReviewCard(card: RenderCard): card is BriefReviewCard {
+  return card.type === CardType.BRIEF_REVIEW;
+}
+
+export function isOrderTrackingCard(card: RenderCard): card is OrderTrackingCard {
+  return card.type === CardType.ORDER_TRACKING;
 }

@@ -10,8 +10,9 @@ Usage:
 """
 
 import asyncio
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import structlog
+from pydantic import BaseModel
 
 # Import event bus
 from event_bus_adapter import (
@@ -66,6 +67,197 @@ structlog.configure(
 
 
 # =============================================================================
+# USP VALIDATION (Trinity-Powered)
+# =============================================================================
+
+class USPValidationResult(BaseModel):
+    """Result of USP validation against competitor data."""
+    is_unique: bool
+    confidence: float  # 0.0 - 1.0
+    overlapping_competitors: List[str] = []
+    overlapping_strengths: List[str] = []
+    suggestion: Optional[str] = None
+
+
+async def validate_usp_against_competitors(
+    usp: str,
+    competitor_card: Dict[str, Any],
+    logger: Optional[Any] = None
+) -> USPValidationResult:
+    """
+    Validate that the USP doesn't overlap with competitor strengths.
+
+    Uses semantic similarity to detect if our proposed USP is actually
+    something competitors already do well.
+
+    Args:
+        usp: The unique selling proposition from the brief
+        competitor_card: The CompetitorAnalysisCard data from conversation
+        logger: Optional logger instance
+
+    Returns:
+        USPValidationResult with validation status and suggestions
+    """
+    log = logger or structlog.get_logger().bind(component="usp_validation")
+
+    # Get competitor data - handle both old and new formats
+    competitors = competitor_card.get("competitors", [])
+
+    # Also check for single competitor format
+    if not competitors and competitor_card.get("primary_competitor_name"):
+        competitors = [{
+            "name": competitor_card.get("primary_competitor_name"),
+            "strengths": competitor_card.get("competitor_strengths", []),
+            "weaknesses": competitor_card.get("competitor_weaknesses", []),
+        }]
+
+    if not competitors:
+        # No competitor data - can't validate, assume OK
+        return USPValidationResult(
+            is_unique=True,
+            confidence=0.5,
+            suggestion="Consider adding competitor analysis for stronger validation"
+        )
+
+    overlapping_competitors: List[str] = []
+    overlapping_strengths: List[str] = []
+
+    for competitor in competitors:
+        competitor_name = competitor.get("name", "Unknown")
+        strengths = competitor.get("strengths", [])
+
+        for strength in strengths:
+            # Check semantic similarity between USP and competitor strength
+            similarity = _calculate_similarity(usp, strength)
+
+            if similarity > 0.80:  # High overlap threshold
+                overlapping_competitors.append(competitor_name)
+                overlapping_strengths.append(strength)
+
+                log.warning(
+                    "usp_overlap_detected",
+                    usp=usp,
+                    competitor=competitor_name,
+                    strength=strength,
+                    similarity=similarity
+                )
+
+    if overlapping_strengths:
+        # USP overlaps - suggest using competitor weaknesses instead
+        all_weaknesses: List[str] = []
+        for competitor in competitors:
+            all_weaknesses.extend(competitor.get("weaknesses", []))
+
+        suggestion = _generate_differentiation_suggestion(
+            usp,
+            overlapping_strengths,
+            all_weaknesses
+        )
+
+        return USPValidationResult(
+            is_unique=False,
+            confidence=0.9,
+            overlapping_competitors=list(set(overlapping_competitors)),
+            overlapping_strengths=overlapping_strengths,
+            suggestion=suggestion
+        )
+
+    return USPValidationResult(
+        is_unique=True,
+        confidence=0.85,
+        suggestion=None
+    )
+
+
+def _calculate_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate semantic similarity between two texts.
+
+    Uses keyword overlap (Jaccard similarity) as fallback.
+    For production, integrate with embeddings service.
+    """
+    # Fallback: Simple keyword overlap (Jaccard similarity)
+    words1 = set(text1.lower().split())
+    words2 = set(text2.lower().split())
+
+    # Remove common words
+    stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                 'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+                 'and', 'or', 'but', 'if', 'then', 'else', 'when', 'where',
+                 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more',
+                 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+                 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'can',
+                 'our', 'we', 'they', 'their', 'your', 'with', 'for', 'from'}
+
+    words1 = words1 - stopwords
+    words2 = words2 - stopwords
+
+    if not words1 or not words2:
+        return 0.0
+
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+
+    return intersection / union if union > 0 else 0.0
+
+
+def _generate_differentiation_suggestion(
+    original_usp: str,
+    overlapping_strengths: List[str],
+    competitor_weaknesses: List[str]
+) -> str:
+    """Generate a suggestion for a more unique USP."""
+    if not competitor_weaknesses:
+        return (
+            f"Your USP '{original_usp}' overlaps with competitor strengths. "
+            f"Consider focusing on a different angle that competitors don't emphasize."
+        )
+
+    # Pick top 3 weaknesses as opportunities
+    top_weaknesses = competitor_weaknesses[:3]
+    weaknesses_str = ", ".join(top_weaknesses)
+
+    return (
+        f"Your USP '{original_usp}' overlaps with what competitors already do well. "
+        f"Consider positioning against their weaknesses instead: {weaknesses_str}"
+    )
+
+
+def extract_usp(payload: Dict[str, Any]) -> str:
+    """Extract the Unique Selling Proposition from conversation cards."""
+    # Try persona card first
+    persona_card = payload.get("persona_card", {})
+    if persona_card:
+        # Look for USP-like fields
+        if "unique_value" in persona_card:
+            return persona_card["unique_value"]
+        if "differentiator" in persona_card:
+            return persona_card["differentiator"]
+        if "value_proposition" in persona_card:
+            return persona_card["value_proposition"]
+
+    # Try script card
+    script_card = payload.get("script_card", {})
+    if script_card:
+        if "key_message" in script_card:
+            return script_card["key_message"]
+        if "hook_line" in script_card:
+            return script_card["hook_line"]
+
+    # Try competitor card for our advantages
+    competitor_card = payload.get("competitor_card", {})
+    if competitor_card:
+        advantages = competitor_card.get("our_advantages", [])
+        if advantages:
+            return advantages[0]  # Use first advantage as USP
+
+    # Fallback: Use business name + generic
+    business = payload.get("business_name", "Your business")
+    return f"{business}'s unique approach"
+
+
+# =============================================================================
 # BRIEF ASSEMBLER INTEGRATION
 # =============================================================================
 
@@ -117,7 +309,30 @@ class BriefAssemblerIntegration:
         """Process cards and emit result"""
         try:
             payload = event.payload
-            
+
+            # NEW: Validate USP against competitor data (Trinity-powered)
+            validation_warnings: List[str] = []
+            competitor_card = payload.get("competitor_card", {})
+
+            if competitor_card:
+                usp = extract_usp(payload)
+                usp_validation = await validate_usp_against_competitors(
+                    usp=usp,
+                    competitor_card=competitor_card,
+                    logger=self._logger
+                )
+
+                if not usp_validation.is_unique:
+                    self._logger.warning(
+                        "usp_validation_failed",
+                        usp=usp,
+                        overlapping_competitors=usp_validation.overlapping_competitors,
+                        suggestion=usp_validation.suggestion
+                    )
+                    validation_warnings.append(
+                        f"USP may not be unique: {usp_validation.suggestion}"
+                    )
+
             # Call assembler (when real agent is imported)
             # result = await self.assembler.process_cards(
             #     persona_card=payload.get("persona_card"),
@@ -129,15 +344,16 @@ class BriefAssemblerIntegration:
             #     business_name=payload.get("business_name"),
             #     trace_id=event.correlation_id,
             # )
-            
+
             # Mock result for demo
             result = {
                 "success": True,
                 "brief_id": f"BRF-{event.correlation_id[:8].upper()}",
                 "confidence_score": 0.92,
                 "quality_grade": "A",
+                "validation_warnings": validation_warnings,
             }
-            
+
             if result.get("success", True):
                 # Emit success event
                 success_event = BriefAssembledEvent(

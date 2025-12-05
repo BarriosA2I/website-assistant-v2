@@ -12,6 +12,8 @@ export { ROICalculator } from "./ROICalculator";
 // New cards (v3)
 export { CheckoutCard } from "./CheckoutCard";
 export { ProductionTracker } from "./ProductionTracker";
+export { BriefReviewCard } from "./BriefReviewCard";
+export { OrderTrackingCard } from "./OrderTrackingCard";
 
 // Dynamic renderer
 export { DynamicCard } from "./DynamicCard";

@@ -91,6 +91,11 @@ class CardType(str, Enum):
     ROI_CALCULATOR = "roi_calculator"
     PRICING_COMPARISON = "pricing_comparison"
     MARKET_TREND = "market_trend"
+    # v3.0 additions
+    CHECKOUT = "checkout"
+    PRODUCTION_TRACKER = "production_tracker"
+    BRIEF_REVIEW = "brief_review"
+    ORDER_TRACKING = "order_tracking"
 
 
 # ============================================================================
@@ -339,7 +344,119 @@ class MarketTrendCard(BaseModel):
 
 
 # ============================================================================
-# SECTION 4: RENDER CARD UNION TYPE
+# SECTION 4: V3.0 GENERATIVE UI CARDS (BriefReview, OrderTracking)
+# ============================================================================
+
+class BriefItem(BaseModel):
+    """Single item in the creative brief."""
+    label: str
+    value: str
+    editable: bool = True
+    warning: Optional[str] = None  # From USP validation
+
+
+class BriefReviewCard(BaseModel):
+    """
+    Interactive card for reviewing/editing the creative brief before payment.
+
+    Displays in the Cyberpunk HUD as an editable form.
+    """
+    type: Literal[CardType.BRIEF_REVIEW] = CardType.BRIEF_REVIEW
+
+    # Header
+    title: str = "Review Your Creative Brief"
+    subtitle: str = "Confirm details before we create your commercial"
+
+    # Brief sections
+    business_info: List[BriefItem] = Field(
+        description="Business name, industry, target audience"
+    )
+    creative_direction: List[BriefItem] = Field(
+        description="Tone, style, key message, USP"
+    )
+    technical_specs: List[BriefItem] = Field(
+        description="Duration, format, delivery requirements"
+    )
+
+    # Validation status
+    validation_passed: bool = True
+    validation_warnings: List[str] = Field(default_factory=list)
+
+    # Actions
+    can_proceed: bool = True
+    proceed_label: str = "Approve & Continue to Payment"
+    edit_label: str = "Request Changes"
+
+    # Metadata
+    session_id: str
+    brief_version: int = 1
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OrderPhase(BaseModel):
+    """Single phase in the order lifecycle."""
+    id: str
+    name: str
+    status: Literal["pending", "active", "completed", "failed"] = "pending"
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    details: Optional[str] = None
+
+
+class OrderTrackingCard(BaseModel):
+    """
+    Persistent HUD element showing order status from payment to delivery.
+
+    Updates in real-time via WebSocket. Cyberpunk aesthetic.
+    """
+    type: Literal[CardType.ORDER_TRACKING] = CardType.ORDER_TRACKING
+
+    # Order identification
+    order_id: str
+    order_number: str  # Human-readable, e.g., "ORD-2024-0042"
+
+    # Current status
+    status: Literal[
+        "payment_pending",
+        "payment_confirmed",
+        "brief_review",
+        "production_queued",
+        "production_active",
+        "production_complete",
+        "delivery_processing",
+        "delivered",
+        "failed"
+    ]
+    status_label: str
+    status_description: str
+
+    # Progress
+    progress_percent: int = Field(ge=0, le=100)
+    current_phase: str
+    phases: List[OrderPhase]
+
+    # Timing
+    created_at: datetime
+    estimated_completion: Optional[datetime] = None
+    actual_completion: Optional[datetime] = None
+
+    # Delivery (when complete)
+    video_url: Optional[str] = None
+    video_thumbnail: Optional[str] = None
+    download_expires_at: Optional[datetime] = None
+
+    # Actions
+    can_cancel: bool = False
+    can_download: bool = False
+    support_url: str = "mailto:support@barriosa2i.com"
+
+    # Metadata
+    session_id: str
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================================================
+# SECTION 5: RENDER CARD UNION TYPE
 # ============================================================================
 
 RenderCard = Union[
@@ -348,7 +465,9 @@ RenderCard = Union[
     ScriptPreviewCard,
     ROICalculatorCard,
     PricingComparisonCard,
-    MarketTrendCard
+    MarketTrendCard,
+    BriefReviewCard,
+    OrderTrackingCard
 ]
 
 
@@ -512,6 +631,12 @@ __all__ = [
     "TrendDataPoint",
     "MarketTrendCard",
     "RenderCard",
+
+    # v3.0 Generative UI Cards
+    "BriefItem",
+    "BriefReviewCard",
+    "OrderPhase",
+    "OrderTrackingCard",
     
     # Messages
     "AssistantMessage",
