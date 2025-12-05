@@ -1,81 +1,284 @@
 # docker-compose.yml
 # ============================================================================
-# BARRIOS A2I WEBSITE ASSISTANT v2.0 — DOCKER COMPOSE
+# BARRIOS A2I WEBSITE ASSISTANT v3.0 — FULL STACK DEPLOYMENT
+# ============================================================================
+# All services needed for the complete pipeline:
+# - Frontend (Next.js)
+# - Backend (FastAPI + LangGraph)
+# - Pipeline Agents (Brief Assembler, Payment Gateway, Delivery Agent)
+# - Infrastructure (RabbitMQ, Redis, PostgreSQL, LocalStack)
 # ============================================================================
 
 version: '3.8'
 
 services:
   # ==========================================================================
-  # BACKEND — FastAPI + LangGraph
-  # ==========================================================================
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: wa2-backend
-    ports:
-      - "8000:8000"
-    environment:
-      - ENV=development
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - TRINITY_API_URL=${TRINITY_API_URL:-http://trinity:8001}
-      - TRINITY_API_KEY=${TRINITY_API_KEY:-}
-      - SUPABASE_URL=${SUPABASE_URL:-}
-      - SUPABASE_KEY=${SUPABASE_KEY:-}
-    volumes:
-      - ./backend:/app
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-    networks:
-      - wa2-network
-
-  # ==========================================================================
-  # FRONTEND — Next.js
+  # FRONTEND
   # ==========================================================================
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: wa2-frontend
     ports:
       - "3000:3000"
     environment:
-      - BACKEND_URL=http://backend:8000
-      - NEXT_PUBLIC_API_URL=/api/chat
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_WS_URL=ws://backend:8000
     depends_on:
       - backend
-    restart: unless-stopped
     networks:
-      - wa2-network
+      - barrios-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ==========================================================================
-  # REDIS — Session Storage & Caching
+  # BACKEND (Website Assistant + LangGraph)
   # ==========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      
+      # API Keys (from .env)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Stripe
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      
+      # Infrastructure
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DATABASE_URL=postgresql://barrios:${POSTGRES_PASSWORD}@postgres:5432/barrios_pipeline
+      
+      # Frontend URL (for Stripe redirects)
+      - FRONTEND_URL=http://localhost:3000
+      
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - barrios-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==========================================================================
+  # PIPELINE AGENTS
+  # ==========================================================================
+  
+  # Brief Assembler Agent
+  brief_assembler:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    command: python agent1_brief_assembler.py
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DATABASE_URL=postgresql://barrios:${POSTGRES_PASSWORD}@postgres:5432/barrios_pipeline
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - barrios-network
+    restart: unless-stopped
+
+  # Payment Gateway Agent
+  payment_gateway:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    command: python agent2_payment_gateway.py
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DATABASE_URL=postgresql://barrios:${POSTGRES_PASSWORD}@postgres:5432/barrios_pipeline
+      - REDIS_URL=redis://redis:6379
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PRICE_STARTER=${STRIPE_PRICE_STARTER}
+      - STRIPE_PRICE_PROFESSIONAL=${STRIPE_PRICE_PROFESSIONAL}
+      - STRIPE_PRICE_ENTERPRISE=${STRIPE_PRICE_ENTERPRISE}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - barrios-network
+    restart: unless-stopped
+
+  # Delivery Agent
+  delivery_agent:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    command: python agent3_delivery_agent.py
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DATABASE_URL=postgresql://barrios:${POSTGRES_PASSWORD}@postgres:5432/barrios_pipeline
+      - REDIS_URL=redis://redis:6379
+      - TOKEN_SECRET=${TOKEN_SECRET}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - SENDGRID_TEMPLATE_PAYMENT_CONFIRMED=${SENDGRID_TEMPLATE_PAYMENT_CONFIRMED}
+      - SENDGRID_TEMPLATE_PRODUCTION_STARTED=${SENDGRID_TEMPLATE_PRODUCTION_STARTED}
+      - SENDGRID_TEMPLATE_DELIVERY_FINAL=${SENDGRID_TEMPLATE_DELIVERY_FINAL}
+      - SENDGRID_TEMPLATE_PAYMENT_FAILED=${SENDGRID_TEMPLATE_PAYMENT_FAILED}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_BUCKET=${S3_BUCKET:-videoforge-deliveries}
+      - S3_ENDPOINT=${S3_ENDPOINT:-}
+      - CLOUDFRONT_DISTRIBUTION_ID=${CLOUDFRONT_DISTRIBUTION_ID:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - barrios-network
+    restart: unless-stopped
+
+  # RAGNAROK Integration (connects to external RAGNAROK service)
+  ragnarok_bridge:
+    build:
+      context: ./pipeline
+      dockerfile: Dockerfile
+    command: python ragnarok_bridge.py
+    environment:
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - RAGNAROK_API_URL=${RAGNAROK_API_URL}
+      - RAGNAROK_API_KEY=${RAGNAROK_API_KEY}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - barrios-network
+    restart: unless-stopped
+
+  # ==========================================================================
+  # INFRASTRUCTURE
+  # ==========================================================================
+
+  # RabbitMQ - Event Bus
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - barrios-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Session & Cache
   redis:
     image: redis:7-alpine
-    container_name: wa2-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis-data:/data
+      - redis_data:/data
     command: redis-server --appendonly yes
-    restart: unless-stopped
     networks:
-      - wa2-network
+      - barrios-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL - Persistent Storage
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=barrios_pipeline
+      - POSTGRES_USER=barrios
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-barrios_secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - barrios-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U barrios -d barrios_pipeline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # LocalStack - S3 Mock (for local development)
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+      - DATA_DIR=/var/lib/localstack/data
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+    networks:
+      - barrios-network
+    profiles:
+      - local # Only run with --profile local
+
+  # MailHog - Email Testing (for local development)
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+    networks:
+      - barrios-network
+    profiles:
+      - local # Only run with --profile local
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
 
 networks:
-  wa2-network:
+  barrios-network:
     driver: bridge
 
+# =============================================================================
+# VOLUMES
+# =============================================================================
+
 volumes:
-  redis-data:
+  rabbitmq_data:
+  redis_data:
+  postgres_data:
+  localstack_data:

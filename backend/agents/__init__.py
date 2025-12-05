@@ -32,6 +32,23 @@ from agents.roi_generator import (
     generate_roi_card,
 )
 
+from agents.creative_director import (
+    CreativeDirectorAgent,
+    CardStatus,
+    CardProgress,
+    ConversationContext,
+    creative_director_node,
+)
+
+from agents.checkout_agent import (
+    CheckoutAgent,
+    CheckoutCard,
+    VideoTier,
+    TIER_PRICING,
+    checkout_node,
+    CheckoutWebhookHandler,
+)
+
 __all__ = [
     # Trinity Bridge (Competitor Analysis)
     "TrinityBridge",
@@ -58,4 +75,17 @@ __all__ = [
     "extract_roi_context",
     "calculate_roi",
     "generate_roi_card",
+    # Creative Director (v3)
+    "CreativeDirectorAgent",
+    "CardStatus",
+    "CardProgress",
+    "ConversationContext",
+    "creative_director_node",
+    # Checkout Agent (v3)
+    "CheckoutAgent",
+    "CheckoutCard",
+    "VideoTier",
+    "TIER_PRICING",
+    "checkout_node",
+    "CheckoutWebhookHandler",
 ]
