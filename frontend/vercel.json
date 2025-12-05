@@ -15,28 +15,5 @@
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
       ]
     }
-  ],
-  "rewrites": [
-    {
-      "source": "/api/v2/:path*",
-      "destination": "https://website-assistant-backend-HASH.run.app/api/v2/:path*"
-    },
-    {
-      "source": "/api/v3/:path*",
-      "destination": "https://website-assistant-backend-HASH.run.app/api/v3/:path*"
-    },
-    {
-      "source": "/webhook/:path*",
-      "destination": "https://website-assistant-backend-HASH.run.app/webhook/:path*"
-    },
-    {
-      "source": "/health",
-      "destination": "https://website-assistant-backend-HASH.run.app/health"
-    }
-  ],
-  "env": {
-    "NEXT_PUBLIC_API_URL": "@next_public_api_url",
-    "NEXT_PUBLIC_STRIPE_KEY": "@next_public_stripe_key",
-    "NEXT_PUBLIC_WS_URL": "@next_public_ws_url"
-  }
+  ]
 }

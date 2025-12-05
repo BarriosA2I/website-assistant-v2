@@ -68,10 +68,10 @@ const nextConfig = {
     removeConsole: process.env.NODE_ENV === 'production' ? { exclude: ['error', 'warn'] } : false,
   },
 
-  // Experimental features
-  experimental: {
-    optimizeCss: true,
-  },
+  // Experimental features (disabled for Vercel compatibility)
+  // experimental: {
+  //   optimizeCss: true,  // Requires 'critters' package
+  // },
 };
 
 module.exports = nextConfig;
