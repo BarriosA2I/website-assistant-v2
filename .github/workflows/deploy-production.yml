@@ -1,0 +1,164 @@
+# ============================================================================
+# WEBSITE ASSISTANT v3 - PRODUCTION DEPLOYMENT WORKFLOW
+# ============================================================================
+# Triggers on push to main branch
+# Deploys backend to Google Cloud Run, frontend to Vercel
+
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_backend:
+        description: 'Deploy backend'
+        required: false
+        default: 'true'
+      deploy_frontend:
+        description: 'Deploy frontend'
+        required: false
+        default: 'true'
+
+env:
+  PROJECT_ID: barrios-a2i
+  REGION: us-central1
+  BACKEND_SERVICE: website-assistant-backend
+
+jobs:
+  # ============================================================================
+  # BACKEND DEPLOYMENT (Google Cloud Run)
+  # ============================================================================
+  deploy-backend:
+    if: github.event.inputs.deploy_backend != 'false'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
+
+      - name: Build Docker image
+        working-directory: backend
+        run: |
+          docker build \
+            -t gcr.io/$PROJECT_ID/$BACKEND_SERVICE:${{ github.sha }} \
+            -t gcr.io/$PROJECT_ID/$BACKEND_SERVICE:latest \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push gcr.io/$PROJECT_ID/$BACKEND_SERVICE:${{ github.sha }}
+          docker push gcr.io/$PROJECT_ID/$BACKEND_SERVICE:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $BACKEND_SERVICE \
+            --image gcr.io/$PROJECT_ID/$BACKEND_SERVICE:${{ github.sha }} \
+            --region $REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 2Gi \
+            --cpu 2 \
+            --timeout 300 \
+            --concurrency 100 \
+            --min-instances 1 \
+            --max-instances 10 \
+            --set-env-vars "ENVIRONMENT=production,LOG_LEVEL=INFO" \
+            --set-secrets "DATABASE_URL=DATABASE_URL:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,RABBITMQ_URL=RABBITMQ_URL:latest,REDIS_URL=REDIS_URL:latest"
+
+      - name: Get Backend URL
+        id: backend-url
+        run: |
+          URL=$(gcloud run services describe $BACKEND_SERVICE --region $REGION --format 'value(status.url)')
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Backend deployed to: $URL"
+
+      - name: Health Check
+        run: |
+          sleep 10
+          curl -f ${{ steps.backend-url.outputs.url }}/health || exit 1
+          echo "Health check passed!"
+
+    outputs:
+      backend_url: ${{ steps.backend-url.outputs.url }}
+
+  # ============================================================================
+  # FRONTEND DEPLOYMENT (Vercel)
+  # ============================================================================
+  deploy-frontend:
+    if: github.event.inputs.deploy_frontend != 'false'
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Pull Vercel Environment
+        working-directory: frontend
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Build for Production
+        working-directory: frontend
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          NEXT_PUBLIC_API_URL: ${{ needs.deploy-backend.outputs.backend_url }}
+
+      - name: Deploy to Vercel
+        working-directory: frontend
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+  # ============================================================================
+  # NOTIFICATION
+  # ============================================================================
+  notify:
+    needs: [deploy-backend, deploy-frontend]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deployment Summary
+        run: |
+          echo "========================================"
+          echo "  WEBSITE ASSISTANT v3 DEPLOYMENT"
+          echo "========================================"
+          echo ""
+          echo "Backend: ${{ needs.deploy-backend.outputs.backend_url }}"
+          echo "Frontend: https://barriosa2i.com"
+          echo ""
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo ""
+          echo "========================================"
