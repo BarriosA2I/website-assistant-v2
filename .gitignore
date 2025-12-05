@@ -21,6 +21,7 @@ credentials/
 !package.json
 !package-lock.json
 !tsconfig.json
+!vercel.json
 
 # Build outputs
 .next/
