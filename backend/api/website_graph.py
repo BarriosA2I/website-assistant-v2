@@ -56,6 +56,22 @@ from agents.roi_generator import (
     is_roi_query,
     process_roi_query,
 )
+from agents.intake_detector import (
+    is_intake_query,
+    get_intake_intent_confidence,
+    create_initial_intake_state,
+    activate_intake_mode,
+    get_current_question,
+    process_answer,
+    is_intake_complete,
+    get_opening_script,
+    format_question_prompt,
+    generate_completion_summary,
+    intake_to_client_config,
+    save_client_config,
+    get_intake_system_context,
+    IntakePhase,
+)
 
 logger = logging.getLogger("BarriosA2I.WebsiteAssistant")
 
@@ -222,6 +238,23 @@ class DirectorState(TypedDict):
     last_card_type: Optional[str]
 
 
+class IntakeState(TypedDict):
+    """
+    Nexus Intake state for commercial lead qualification.
+    Tracks progress through the 30-question intake flow.
+    """
+    active: bool
+    phase: Optional[str]
+    question_index: int
+    answers: Dict[str, Any]
+    skipped: List[str]
+    started_at: Optional[str]
+    completed: bool
+    lead_score: Optional[int]
+    recommended_package: Optional[str]
+    client_id: Optional[str]
+
+
 class WebsiteAssistantState(TypedDict):
     """Global state for the Website Assistant LangGraph."""
     # Messages (append-only)
@@ -258,7 +291,10 @@ class WebsiteAssistantState(TypedDict):
     
     # Director state (persisted)
     director: DirectorState
-    
+
+    # Intake state (persisted for commercial lead flow)
+    intake: IntakeState
+
     # Validation
     validation: ValidationState
     
@@ -342,6 +378,18 @@ def create_initial_state(
             conversation_theme=None,
             last_card_type=None
         ),
+        intake=IntakeState(
+            active=False,
+            phase=None,
+            question_index=0,
+            answers={},
+            skipped=[],
+            started_at=None,
+            completed=False,
+            lead_score=None,
+            recommended_package=None,
+            client_id=None
+        ),
         validation=ValidationState(required=False, passed=None, action=None, issues=[]),
         metrics=MetricsState(total_cost_usd=0.0, total_latency_ms=0.0, models_used=[]),
         frustration_detected=False,
@@ -406,7 +454,48 @@ async def supervisor_node(state: WebsiteAssistantState) -> Dict[str, Any]:
     
     last_msg = state["messages"][-1]
     msg_text = last_msg.content if hasattr(last_msg, 'content') else str(last_msg)
-    
+
+    # =========================================================================
+    # INTAKE MODE DETECTION - Highest priority for commercial leads
+    # =========================================================================
+
+    # If already in active intake mode, continue the intake flow
+    if state.get("intake", {}).get("active"):
+        logger.info("Intake mode active, routing to intake node")
+        return {
+            "current_node": "supervisor",
+            "next_node": "intake",
+            "detected_intent": "intake_continuation",
+            "intent_confidence": 1.0,
+            "router_reasoning": "Active intake session - continuing flow",
+            "hop_count": state["hop_count"] + 1,
+            "metrics": {
+                **state["metrics"],
+                "total_cost_usd": state["metrics"]["total_cost_usd"] + 0.0001
+            }
+        }
+
+    # Check for NEW intake trigger (commercial interest)
+    if is_intake_query(msg_text):
+        logger.info("Commercial interest detected, activating intake mode")
+        confidence = get_intake_intent_confidence(msg_text)
+        return {
+            "current_node": "supervisor",
+            "next_node": "intake",
+            "detected_intent": "commercial_inquiry",
+            "intent_confidence": confidence,
+            "router_reasoning": "Commercial/video interest detected - starting intake",
+            "hop_count": state["hop_count"] + 1,
+            "metrics": {
+                **state["metrics"],
+                "total_cost_usd": state["metrics"]["total_cost_usd"] + 0.0001
+            }
+        }
+
+    # =========================================================================
+    # Standard intent detection (after intake check)
+    # =========================================================================
+
     # Check for competitive intelligence queries FIRST
     if is_competitive_query(msg_text):
         logger.info(f"Competitive query detected, routing to intelligence node")
@@ -985,6 +1074,146 @@ What would be most helpful?""")
         }
 
 
+async def intake_node(state: WebsiteAssistantState) -> Dict[str, Any]:
+    """
+    Intake Node: Handles Nexus commercial intake flow.
+
+    Guides prospects through the 30-question intake process to collect
+    information for RAGNAROK commercial generation.
+
+    Flow:
+    1. If not active: Activate intake and show opening script
+    2. If active: Process answer, advance to next question
+    3. If complete: Generate summary, save client config, end
+    """
+    start_time = datetime.utcnow()
+
+    last_msg = state["messages"][-1]
+    msg_text = last_msg.content if hasattr(last_msg, 'content') else str(last_msg)
+
+    tier = state["user_tier"]
+    config = model_router.route("website_assistant", tier, state["metrics"]["total_cost_usd"])
+
+    # Get or create intake state
+    intake = dict(state.get("intake", {}))
+
+    try:
+        # Case 1: Starting a new intake session
+        if not intake.get("active"):
+            logger.info("Starting new intake session (Nexus mode)")
+            intake = activate_intake_mode({"intake": intake})
+
+            # Generate opening + first question
+            opening = get_opening_script()
+            first_q = get_current_question(intake)
+            first_q_text = format_question_prompt(first_q, is_first_in_phase=True, phase=intake["phase"]) if first_q else ""
+
+            response_text = f"{opening}\n\n{first_q_text}"
+            response_message = AIMessage(content=response_text)
+
+            latency_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+            return {
+                "current_node": "intake",
+                "next_node": END,
+                "messages": [response_message],
+                "intake": intake,
+                "render_card": None,
+                "hop_count": state["hop_count"] + 1,
+                "detected_intent": "intake_started",
+                "metrics": {
+                    **state["metrics"],
+                    "total_cost_usd": state["metrics"]["total_cost_usd"] + config.estimated_cost,
+                    "total_latency_ms": state["metrics"]["total_latency_ms"] + latency_ms,
+                    "models_used": state["metrics"]["models_used"] + [config.model]
+                }
+            }
+
+        # Case 2: Continuing an active intake session
+        logger.info(f"Continuing intake: phase={intake.get('phase')}, q_idx={intake.get('question_index')}")
+
+        # Process the answer
+        intake, next_response = process_answer(intake, msg_text)
+
+        latency_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        # Case 3: Intake is now complete
+        if intake.get("completed"):
+            logger.info("Intake completed! Generating summary and saving client config")
+
+            # Generate client config
+            client_config = intake_to_client_config(intake)
+            intake["client_id"] = client_config["client_id"]
+
+            # Save to disk
+            try:
+                config_path = save_client_config(client_config)
+                logger.info(f"Saved client config to: {config_path}")
+            except Exception as save_err:
+                logger.error(f"Failed to save client config: {save_err}")
+
+            response_message = AIMessage(content=next_response)
+
+            return {
+                "current_node": "intake",
+                "next_node": END,
+                "messages": [response_message],
+                "intake": intake,
+                "render_card": None,
+                "hop_count": state["hop_count"] + 1,
+                "detected_intent": "intake_completed",
+                "metrics": {
+                    **state["metrics"],
+                    "total_cost_usd": state["metrics"]["total_cost_usd"] + config.estimated_cost,
+                    "total_latency_ms": state["metrics"]["total_latency_ms"] + latency_ms,
+                    "models_used": state["metrics"]["models_used"] + [config.model]
+                }
+            }
+
+        # Case 4: More questions to ask
+        response_message = AIMessage(content=next_response)
+
+        return {
+            "current_node": "intake",
+            "next_node": END,
+            "messages": [response_message],
+            "intake": intake,
+            "render_card": None,
+            "hop_count": state["hop_count"] + 1,
+            "detected_intent": "intake_continuation",
+            "metrics": {
+                **state["metrics"],
+                "total_cost_usd": state["metrics"]["total_cost_usd"] + config.estimated_cost,
+                "total_latency_ms": state["metrics"]["total_latency_ms"] + latency_ms,
+                "models_used": state["metrics"]["models_used"] + [config.model]
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Intake node error: {e}", exc_info=True)
+        latency_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        error_response = AIMessage(content="""I apologize for the hiccup! Let me try that again.
+
+I'm Nexus, your AI creative director. I was in the middle of learning about your business to create a custom commercial concept.
+
+Could you please repeat your last answer? Or if you'd like to start fresh, just say "start over" and we'll begin again.""")
+
+        return {
+            "current_node": "intake",
+            "next_node": END,
+            "messages": [error_response],
+            "intake": intake,  # Preserve state
+            "render_card": None,
+            "hop_count": state["hop_count"] + 1,
+            "metrics": {
+                **state["metrics"],
+                "total_cost_usd": state["metrics"]["total_cost_usd"] + 0.001,
+                "total_latency_ms": state["metrics"]["total_latency_ms"] + latency_ms
+            }
+        }
+
+
 async def website_assistant_node(state: WebsiteAssistantState) -> Dict[str, Any]:
     """Website Assistant: General conversation handler."""
     
@@ -1131,6 +1360,7 @@ def build_website_assistant_graph() -> StateGraph:
     workflow.add_node("persona", persona_node)  # Persona card generation
     workflow.add_node("script", script_node)  # Script/commercial generation
     workflow.add_node("roi", roi_node)  # ROI calculator generation
+    workflow.add_node("intake", intake_node)  # Nexus commercial intake
     workflow.add_node("website_assistant", website_assistant_node)
     workflow.add_node("retrieval_agent", retrieval_agent_node)
     workflow.add_node("lead_qualifier", lead_qualifier_node)
@@ -1156,6 +1386,7 @@ def build_website_assistant_graph() -> StateGraph:
         "supervisor",
         route_after_supervisor,
         {
+            "intake": "intake",  # Nexus commercial intake (highest priority)
             "intelligence": "intelligence",  # Competitor analysis
             "persona": "persona",  # Persona cards
             "script": "script",  # Script/commercial generation
@@ -1179,6 +1410,9 @@ def build_website_assistant_graph() -> StateGraph:
 
     # ROI -> END (returns ROICalculatorCard directly)
     workflow.add_edge("roi", END)
+
+    # Intake -> END (returns intake response directly)
+    workflow.add_edge("intake", END)
 
     # Other edges
     workflow.add_edge("retrieval_agent", "website_assistant")
